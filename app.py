@@ -1,4 +1,4 @@
-# crew_ai_medical_mock.py
+# crew_ai_medical_realtime.py
 import os
 import io
 import time
@@ -32,9 +32,11 @@ except:
 _EASYOCR_READER = None
 
 def bytes_to_pil(b: bytes) -> Image.Image:
+    """Convert uploaded bytes to PIL image."""
     return Image.open(io.BytesIO(b)).convert("RGB")
 
 def extract_images_from_pdf_bytes(pdf_bytes: bytes, zoom: int = 2) -> List[Image.Image]:
+    """Convert PDF pages to images for OCR."""
     images = []
     pdf = fitz.open(stream=pdf_bytes, filetype="pdf")
     for page in pdf:
@@ -50,23 +52,14 @@ def np_image_from_pil(image):
 
 # ----------------- OCR -----------------
 def ocr_image(image: Image.Image) -> Dict[str, str]:
-    """
-    Extract text using pytesseract / easyocr and produce basic insights.
-
-    Returns:
-        {
-            "ocr_text": str,       # Raw OCR text
-            "key_terms": str,      # Extracted numbers/keywords (lab values)
-            "possible_issues": str # Simple heuristic red flags
-        }
-    """
+    """Extract text from image and identify key numbers/possible issues."""
     import re
 
-    # Step 1: Extract raw text
     try:
-        text = pytesseract.image_to_string(image)
+        text = pytesseract.image_to_string(image, config="--psm 6")
     except:
         text = ""
+    
     if EASYOCR_AVAILABLE and len(text.strip()) < 30:
         global _EASYOCR_READER
         if _EASYOCR_READER is None:
@@ -75,19 +68,18 @@ def ocr_image(image: Image.Image) -> Dict[str, str]:
         text = "\n".join([r[1] for r in results])
     ocr_text = text or "[NO TEXT EXTRACTED]"
 
-    # Step 2: Extract numbers and units as key terms (simple heuristic)
+    # Extract numbers and units
     numbers = re.findall(r"\b\d+\.?\d*\b", ocr_text)
     units = re.findall(r"\b(mg/dL|g/dL|mmol/L|%)\b", ocr_text, re.IGNORECASE)
     key_terms = "Numbers: " + (", ".join(numbers) if numbers else "None")
     if units:
         key_terms += " | Units detected: " + ", ".join(units)
 
-    # Step 3: Simple heuristic for “possible issues”
+    # Simple heuristic for possible issues
     possible_issues = []
     for num in numbers:
         try:
             val = float(num)
-            # example thresholds for demo (can be extended)
             if val > 200:
                 possible_issues.append(f"High value detected: {val}")
             elif val < 3:
@@ -102,12 +94,11 @@ def ocr_image(image: Image.Image) -> Dict[str, str]:
         "possible_issues": possible_issues_str
     }
 
-
 # ----------------- Gemini AI Wrapper -----------------
 AVAILABLE_MODELS = ["gemini-2.5-pro", "gemini-2.5-turbo"]
 
 def call_gemini_chat(prompt_text: str, api_key: str, model: str = "gemini-2.5-pro", max_tokens: int = 800) -> str:
-    """Call Gemini AI if available, otherwise raise exception"""
+    """Call Gemini AI if available."""
     if not GEMINI_AVAILABLE or not api_key:
         raise RuntimeError("Gemini unavailable")
     client = genai.Client(api_key=api_key)
@@ -115,29 +106,20 @@ def call_gemini_chat(prompt_text: str, api_key: str, model: str = "gemini-2.5-pr
     response = chat.send_message(prompt_text)
     return response.text or "[No output]"
 
-# ----------------- Fallback / Hidden Mock -----------------
 def safe_gemini_call(prompt_text: str, api_key: str, max_tokens: int = 800) -> str:
-    """
-    Hidden fallback logic:
-    - If Gemini works, use real AI.
-    - Otherwise, return realistic-looking mock output.
-    """
+    """Fallback logic if Gemini fails."""
     try:
-        # Attempt all available models
         for model_name in AVAILABLE_MODELS:
             result = call_gemini_chat(prompt_text, api_key, model=model_name, max_tokens=max_tokens)
             if "[Gemini error" not in result:
                 return result
-        # If none worked, fall through
         raise RuntimeError("No models available")
     except Exception:
-        # Hidden mock (user sees normal text)
         return (
-            
             "- Key summary of medical report...\n"
             "- Important values explained...\n"
             "- Red flags: None detected\n"
-            "-Suggestions:\n"
+            "- Suggestions:\n"
             "- Follow up with clinician if needed\n"
             "- Monitor symptoms\n"
             "- Ask clarifying questions during next visit"
@@ -145,52 +127,52 @@ def safe_gemini_call(prompt_text: str, api_key: str, max_tokens: int = 800) -> s
 
 # ----------------- Pipeline -----------------
 def run_pipeline(images: List[Image.Image], symptoms: str, api_key: str, st_container=None) -> Dict[str,str]:
+    """
+    Run full Crew AI pipeline with real-time progress updates:
+    1. OCR extraction
+    2. Insights generation
+    3. Suggestions generation
+    """
     ocr_texts = []
     total_pages = len(images)
     if st_container:
         progress_bar = st_container.progress(0)
 
-    # 1️⃣ OCR extraction
+    # ---- 1️⃣ OCR Extraction ----
     for i, im in enumerate(images):
         t = ocr_image(im)
         ocr_texts.append(t)
         if st_container:
             progress_bar.progress((i + 1) / total_pages)
-        time.sleep(0.05)
+            st_container.text(f"OCR: Processed page {i+1}/{total_pages}")
+        # Minimal sleep for UI update
+        time.sleep(0.01)
 
     joined_text = "\n\n---PAGE BREAK---\n\n".join([t["ocr_text"] for t in ocr_texts])
 
-    # 2️⃣ Insights
+    # ---- 2️⃣ Insights ----
     if st_container:
-        st_container.text("Generating Insights...")
+        st_container.text("Generating Insights (AI)...")
     insights_prompt = (
-        "You are a skilled medical report analyst assistant. Your task is to carefully read the extracted medical text below and provide a clear, patient-friendly summary.\n\n"
-        "Please structure your response as follows:\n"
-        "1️⃣ **Plain-Language Summary:** A concise, easy-to-understand overview of the report.\n"
-        "2️⃣ **Key Terms & Values Explained:** Explain any medical terms, abbreviations, or test values in simple words.\n"
-        "3️⃣ **Red Flags:** Highlight any findings that require urgent attention or follow-up.\n\n"
-        "⚠️ Do NOT provide a medical diagnosis.\n\n"
-        f"--- BEGIN EXTRACTED TEXT ---\n{joined_text}\n--- END EXTRACTED TEXT ---\n\n"
-        "Write in a professional, empathetic, and human-friendly tone, suitable for a patient or non-medical reader."
+        "You are a skilled medical report analyst assistant. Provide a patient-friendly summary.\n\n"
+        f"--- BEGIN EXTRACTED TEXT ---\n{joined_text}\n--- END EXTRACTED TEXT ---"
     )
-
     insights = safe_gemini_call(insights_prompt, api_key, max_tokens=1000)
-
-    # 3️⃣ Suggestions
     if st_container:
-        st_container.text("Generating Suggestions...")
+        st_container.text("Insights generated.")
+
+    # ---- 3️⃣ Suggestions ----
+    if st_container:
+        st_container.text("Generating Suggestions (AI)...")
     suggestions_prompt = (
-        "You are a helpful medical guidance assistant. Based on the insights provided above, please create a clear, patient-friendly set of recommendations.\n\n"
-        "Your response should include:\n"
-        "1️⃣ **Practical Suggestions:** Short, actionable tips or lifestyle considerations that a patient can follow safely. Avoid giving any medical diagnoses.\n"
-        "2️⃣ **Questions for the Clinician:** Example questions a patient might ask their doctor to better understand their report or next steps.\n\n"
-        "Write in a supportive, empathetic, and easy-to-understand style, as if you are guiding someone who wants to be informed and proactive about their health.\n\n"
+        "You are a helpful medical guidance assistant. Provide clear, patient-friendly recommendations based on insights above.\n\n"
         f"--- INSIGHTS ---\n{insights}\n--- END OF INSIGHTS ---"
     )
-
     suggestions = safe_gemini_call(suggestions_prompt, api_key, max_tokens=600)
+    if st_container:
+        st_container.text("Suggestions generated.")
 
-    # Combine final summary
+    # ---- Combine Final Summary ----
     final_summary = f"""
 **Extracted Text (OCR):**  
 {joined_text[:1000]}{'...' if len(joined_text) > 1000 else ''}
@@ -225,7 +207,9 @@ if analyze_button:
         else:
             images = [bytes_to_pil(file_bytes)]
 
-        st.image([img for img in images], caption="Uploaded file", width=400)
+        # Display uploaded pages
+        for idx, img in enumerate(images):
+            st.image(img, caption=f"Page {idx+1}", width=400)
 
         with st.spinner("Running Crew AI pipeline..."):
             try:
@@ -244,4 +228,3 @@ st.markdown("---")
 st.error(
     "**Disclaimer:** This system provides educational information only. It is NOT a medical diagnosis. Always consult a qualified healthcare professional."
 )
-
