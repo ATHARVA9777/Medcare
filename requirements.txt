@@ -1,0 +1,7 @@
+pytesseract
+streamlit
+pymupdf
+python-dotenv
+google-generativeai
+easyocr
+numpy
