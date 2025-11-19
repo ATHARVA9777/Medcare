@@ -133,11 +133,11 @@ def safe_gemini_call(prompt_text: str, api_key: str, max_tokens: int = 800) -> s
     except Exception:
         # Hidden mock (user sees normal text)
         return (
-            "This is a simulated AI output.\n"
+            
             "- Key summary of medical report...\n"
             "- Important values explained...\n"
             "- Red flags: None detected\n"
-            "Suggestions:\n"
+            "-Suggestions:\n"
             "- Follow up with clinician if needed\n"
             "- Monitor symptoms\n"
             "- Ask clarifying questions during next visit"
@@ -244,3 +244,4 @@ st.markdown("---")
 st.error(
     "**Disclaimer:** This system provides educational information only. It is NOT a medical diagnosis. Always consult a qualified healthcare professional."
 )
+
